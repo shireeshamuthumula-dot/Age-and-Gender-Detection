@@ -1,0 +1,711 @@
+
+import tkinter as tk
+
+from tkinter import (
+    filedialog,
+    messagebox
+)
+
+import cv2
+import numpy as np
+
+from PIL import (
+    Image,
+    ImageTk
+)
+
+
+WINDOW_WIDTH = 1100
+
+WINDOW_HEIGHT = 800
+
+
+def detect_dress_colour(image):
+    """
+    Estimate the dominant colour in the lower part
+    of the image.
+
+    This is a simple image-processing method.
+    """
+
+    height, width = image.shape[:2]
+
+    # Use lower 55% of image
+    lower_part = image[
+        int(height * 0.45):height,
+        :
+    ]
+
+    if lower_part.size == 0:
+        return "Unknown"
+
+    # Resize
+    lower_part = cv2.resize(
+        lower_part,
+        (100, 100)
+    )
+
+    hsv = cv2.cvtColor(
+        lower_part,
+        cv2.COLOR_BGR2HSV
+    )
+
+    # Remove very dark pixels
+    valid = hsv[:, :, 2] > 40
+
+    if np.count_nonzero(valid) < 100:
+        return "Black"
+
+    hue = hsv[:, :, 0]
+
+    saturation = hsv[:, :, 1]
+
+    value = hsv[:, :, 2]
+
+    
+    # Colour masks
+
+    red1 = cv2.inRange(
+        hsv,
+        np.array([0, 70, 40]),
+        np.array([10, 255, 255])
+    )
+
+    red2 = cv2.inRange(
+        hsv,
+        np.array([170, 70, 40]),
+        np.array([180, 255, 255])
+    )
+
+    red = red1 | red2
+
+    blue = cv2.inRange(
+        hsv,
+        np.array([90, 60, 40]),
+        np.array([140, 255, 255])
+    )
+
+    green = cv2.inRange(
+        hsv,
+        np.array([35, 50, 40]),
+        np.array([85, 255, 255])
+    )
+
+    yellow = cv2.inRange(
+        hsv,
+        np.array([15, 60, 40]),
+        np.array([35, 255, 255])
+    )
+
+    purple = cv2.inRange(
+        hsv,
+        np.array([140, 40, 40]),
+        np.array([170, 255, 255])
+    )
+
+    total = np.count_nonzero(valid)
+
+    percentages = {
+        "Red": np.count_nonzero(
+            red & valid
+        ) / total,
+
+        "Blue": np.count_nonzero(
+            blue & valid
+        ) / total,
+
+        "Green": np.count_nonzero(
+            green & valid
+        ) / total,
+
+        "Yellow": np.count_nonzero(
+            yellow & valid
+        ) / total,
+
+        "Purple": np.count_nonzero(
+            purple & valid
+        ) / total
+    }
+
+    best_colour = max(
+        percentages,
+        key=percentages.get
+    )
+
+    if percentages[best_colour] > 0.12:
+        return best_colour
+
+    mean_value = np.mean(
+        value[valid]
+    )
+
+    mean_saturation = np.mean(
+        saturation[valid]
+    )
+
+    if mean_value < 65:
+        return "Black"
+
+    if (
+        mean_value > 185
+        and
+        mean_saturation < 65
+    ):
+        return "White"
+
+    if mean_saturation < 55:
+        return "Gray"
+
+    return "Other"
+
+# AGE ESTIMATION
+
+
+def estimate_age_group(image):
+    """
+    Demonstration age-group estimator.
+
+    For a production project, replace this function with
+    your own trained age-classification model.
+
+    This version provides a clear ML-project structure
+    without pretending that a simple image rule is a
+    trained age model.
+    """
+
+    height, width = image.shape[:2]
+
+    if height == 0 or width == 0:
+        return "Unknown"
+
+    # Placeholder categories.
+    # Replace with your trained model for final submission.
+    return "Age model required"
+
+
+# EMOTION
+
+
+def detect_emotion(image):
+    """
+    Emotion prediction placeholder.
+
+    Replace this function with your trained emotion
+    classification model.
+
+    The GUI and conditional logic are already implemented.
+    """
+
+    if image is None:
+        return "Unknown"
+
+    return "Emotion model required"
+
+
+# CONDITIONAL LOGIC
+
+def analyze_image(
+    image,
+    category
+):
+    """
+    Apply project rules according to the
+    user-selected category.
+    """
+
+    result = {}
+
+        # Always predict emotion
+    
+    result["Emotion"] = detect_emotion(
+        image
+    )
+
+    
+    # Category 1
+    
+    if category == "Indian":
+
+        result["Nationality"] = (
+            "Indian (user selected)"
+        )
+
+        result["Age"] = (
+            estimate_age_group(
+                image
+            )
+        )
+
+        result["Dress Colour"] = (
+            detect_dress_colour(
+                image
+            )
+        )
+
+    
+    # Category 2
+    
+    elif category == "United States":
+
+        result["Nationality"] = (
+            "United States (user selected)"
+        )
+
+        result["Age"] = (
+            estimate_age_group(
+                image
+            )
+        )
+
+        # Category 3
+    
+    elif category == "African":
+
+        result["Nationality"] = (
+            "African (user selected)"
+        )
+
+        result["Dress Colour"] = (
+            detect_dress_colour(
+                image
+            )
+        )
+
+        # Other
+    
+
+    else:
+
+        result["Nationality"] = (
+            category
+            + " (user selected)"
+        )
+
+    return result
+
+
+# GUI APPLICATION
+
+class Application:
+
+    def __init__(
+        self,
+        root
+    ):
+
+        self.root = root
+
+        self.root.title(
+            "Person Image Analysis"
+        )
+
+        self.root.geometry(
+            f"{WINDOW_WIDTH}x{WINDOW_HEIGHT}"
+        )
+
+        self.root.configure(
+            bg="#202020"
+        )
+
+        self.image = None
+
+        self.photo = None
+
+               # TITLE
+       
+        title = tk.Label(
+            root,
+            text="PERSON IMAGE ANALYSIS",
+            font=(
+                "Arial",
+                26,
+                "bold"
+            ),
+            bg="#202020",
+            fg="white"
+        )
+
+        title.pack(
+            pady=20
+        )
+
+        subtitle = tk.Label(
+            root,
+            text=(
+                "Image upload + conditional analysis"
+            ),
+            font=(
+                "Arial",
+                13
+            ),
+            bg="#202020",
+            fg="#cccccc"
+        )
+
+        subtitle.pack()
+
+                # MAIN FRAME
+        
+        main_frame = tk.Frame(
+            root,
+            bg="#202020"
+        )
+
+        main_frame.pack(
+            fill="both",
+            expand=True,
+            padx=20,
+            pady=20
+        )
+
+                # LEFT SIDE
+        
+        left_frame = tk.Frame(
+            main_frame,
+            bg="#303030",
+            width=550
+        )
+
+        left_frame.pack(
+            side="left",
+            fill="both",
+            expand=True,
+            padx=10
+        )
+
+        preview_title = tk.Label(
+            left_frame,
+            text="INPUT IMAGE PREVIEW",
+            font=(
+                "Arial",
+                16,
+                "bold"
+            ),
+            bg="#303030",
+            fg="white"
+        )
+
+        preview_title.pack(
+            pady=15
+        )
+
+        self.image_label = tk.Label(
+            left_frame,
+            text="No image selected",
+            font=(
+                "Arial",
+                15
+            ),
+            bg="#404040",
+            fg="white",
+            width=45,
+            height=20
+        )
+
+        self.image_label.pack(
+            padx=20,
+            pady=20
+        )
+
+        upload_button = tk.Button(
+            left_frame,
+            text="UPLOAD IMAGE",
+            command=self.upload_image,
+            font=(
+                "Arial",
+                13,
+                "bold"
+            ),
+            padx=30,
+            pady=12
+        )
+
+        upload_button.pack(
+            pady=15
+        )
+
+                # RIGHT SIDE
+        
+        right_frame = tk.Frame(
+            main_frame,
+            bg="#303030"
+        )
+
+        right_frame.pack(
+            side="right",
+            fill="both",
+            expand=True,
+            padx=10
+        )
+
+        category_title = tk.Label(
+            right_frame,
+            text="SELECT CATEGORY",
+            font=(
+                "Arial",
+                16,
+                "bold"
+            ),
+            bg="#303030",
+            fg="white"
+        )
+
+        category_title.pack(
+            pady=20
+        )
+
+        self.category = tk.StringVar()
+
+        self.category.set(
+            "Indian"
+        )
+
+        options = [
+            "Indian",
+            "United States",
+            "African",
+            "Other"
+        ]
+
+        dropdown = tk.OptionMenu(
+            right_frame,
+            self.category,
+            *options
+        )
+
+        dropdown.config(
+            font=(
+                "Arial",
+                13
+            ),
+            width=20
+        )
+
+        dropdown.pack(
+            pady=10
+        )
+
+        analyze_button = tk.Button(
+            right_frame,
+            text="ANALYZE IMAGE",
+            command=self.analyze,
+            font=(
+                "Arial",
+                14,
+                "bold"
+            ),
+            padx=30,
+            pady=12
+        )
+
+        analyze_button.pack(
+            pady=25
+        )
+
+               # OUTPUT
+        
+        output_title = tk.Label(
+            right_frame,
+            text="OUTPUT",
+            font=(
+                "Arial",
+                18,
+                "bold"
+            ),
+            bg="#303030",
+            fg="white"
+        )
+
+        output_title.pack(
+            pady=10
+        )
+
+        self.output = tk.Label(
+            right_frame,
+            text=(
+                "Upload an image\n"
+                "and click ANALYZE IMAGE."
+            ),
+            font=(
+                "Arial",
+                14
+            ),
+            bg="#404040",
+            fg="#00ff99",
+            justify="left",
+            anchor="nw",
+            width=40,
+            height=12
+        )
+
+        self.output.pack(
+            padx=20,
+            pady=15
+        )
+
+                # CLEAR BUTTON
+        
+        clear_button = tk.Button(
+            right_frame,
+            text="CLEAR",
+            command=self.clear,
+            font=(
+                "Arial",
+                12,
+                "bold"
+            ),
+            padx=30,
+            pady=8
+        )
+
+        clear_button.pack(
+            pady=10
+        )
+
+        # UPLOAD
+    
+    def upload_image(self):
+
+        filename = filedialog.askopenfilename(
+            title="Select Image",
+            filetypes=[
+                (
+                    "Image Files",
+                    "*.jpg *.jpeg *.png *.bmp"
+                ),
+                (
+                    "All Files",
+                    "*.*"
+                )
+            ]
+        )
+
+        if not filename:
+            return
+
+        image = cv2.imread(
+            filename
+        )
+
+        if image is None:
+
+            messagebox.showerror(
+                "Error",
+                "Could not read the image."
+            )
+
+            return
+
+        self.image = image
+
+        self.show_image(
+            image
+        )
+
+        self.output.config(
+            text=(
+                "Image uploaded successfully.\n\n"
+                "Select a category and click\n"
+                "ANALYZE IMAGE."
+            )
+        )
+
+        # SHOW IMAGE
+    
+    def show_image(
+        self,
+        image
+    ):
+
+        rgb = cv2.cvtColor(
+            image,
+            cv2.COLOR_BGR2RGB
+        )
+
+        pil_image = Image.fromarray(
+            rgb
+        )
+
+        pil_image.thumbnail(
+            (500, 400)
+        )
+
+        self.photo = ImageTk.PhotoImage(
+            pil_image
+        )
+
+        self.image_label.config(
+            image=self.photo,
+            text=""
+        )
+
+        # ANALYZE
+    
+    def analyze(self):
+
+        if self.image is None:
+
+            messagebox.showwarning(
+                "No Image",
+                "Please upload an image first."
+            )
+
+            return
+
+        category = (
+            self.category.get()
+        )
+
+        results = analyze_image(
+            self.image,
+            category
+        )
+
+        output_text = (
+            "ANALYSIS RESULT\n"
+            "========================\n\n"
+        )
+
+        for key, value in results.items():
+
+            output_text += (
+                f"{key}: {value}\n\n"
+            )
+
+        self.output.config(
+            text=output_text
+        )
+
+        # CLEAR
+    
+    def clear(self):
+
+        self.image = None
+
+        self.photo = None
+
+        self.image_label.config(
+            image="",
+            text="No image selected"
+        )
+
+        self.output.config(
+            text=(
+                "Upload an image\n"
+                "and click ANALYZE IMAGE."
+            )
+        )
+
+
+# START PROGRAM
+
+if __name__ == "__main__":
+
+    root = tk.Tk()
+
+    application = Application(
+        root
+    )
+
+    root.mainloop()
+```
