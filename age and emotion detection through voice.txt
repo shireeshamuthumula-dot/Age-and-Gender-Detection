@@ -1,0 +1,836 @@
+import os
+import csv
+import tkinter as tk
+from tkinter import filedialog, messagebox
+from datetime import datetime
+
+import numpy as np
+import pandas as pd
+import librosa
+import sounddevice as sd
+import soundfile as sf
+import joblib
+
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.preprocessing import StandardScaler
+from sklearn.pipeline import Pipeline
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score
+
+
+# SETTINGS
+
+DATASET_FILE = "voice_dataset.csv"
+
+AGE_MODEL_FILE = "age_voice_model.pkl"
+
+EMOTION_MODEL_FILE = "emotion_voice_model.pkl"
+
+PREDICTION_FILE = "predictions.csv"
+
+SAMPLE_RATE = 22050
+
+RECORD_SECONDS = 5
+
+N_MFCC = 40
+
+
+# FEATURE EXTRACTION
+
+def extract_features(filename):
+    """
+    Convert a WAV file into numerical MFCC features.
+    """
+
+    try:
+
+        audio, sr = librosa.load(
+            filename,
+            sr=SAMPLE_RATE,
+            mono=True
+        )
+
+        if len(audio) < sr:
+
+            raise ValueError(
+                "Audio is too short."
+            )
+
+        # Remove silence
+        audio, _ = librosa.effects.trim(
+            audio,
+            top_db=25
+        )
+
+        # MFCC
+        mfcc = librosa.feature.mfcc(
+            y=audio,
+            sr=sr,
+            n_mfcc=N_MFCC
+        )
+
+        # Delta
+        delta = librosa.feature.delta(mfcc)
+
+        # Delta-delta
+        delta2 = librosa.feature.delta(
+            mfcc,
+            order=2
+        )
+
+        # Statistics
+        features = np.concatenate([
+            np.mean(mfcc, axis=1),
+            np.std(mfcc, axis=1),
+            np.mean(delta, axis=1),
+            np.std(delta, axis=1),
+            np.mean(delta2, axis=1),
+            np.std(delta2, axis=1)
+        ])
+
+        return features
+
+    except Exception as e:
+
+        print(
+            "Feature extraction error:",
+            filename,
+            e
+        )
+
+        return None
+
+
+# CREATE PREDICTION CSV
+
+def create_prediction_file():
+
+    if not os.path.exists(PREDICTION_FILE):
+
+        with open(
+            PREDICTION_FILE,
+            "w",
+            newline="",
+            encoding="utf-8"
+        ) as file:
+
+            writer = csv.writer(file)
+
+            writer.writerow([
+                "Date",
+                "Time",
+                "Audio File",
+                "Age Group",
+                "Senior Citizen",
+                "Emotion"
+            ])
+
+
+# TRAIN MODELS
+
+def train_models():
+
+    if not os.path.exists(DATASET_FILE):
+
+        messagebox.showerror(
+            "Dataset Missing",
+            "voice_dataset.csv was not found.\n\n"
+            "Create the CSV with columns:\n"
+            "filename,age,emotion"
+        )
+
+        return False
+
+    data = pd.read_csv(
+        DATASET_FILE
+    )
+
+    required_columns = [
+        "filename",
+        "age",
+        "emotion"
+    ]
+
+    for column in required_columns:
+
+        if column not in data.columns:
+
+            messagebox.showerror(
+                "Dataset Error",
+                f"Missing column: {column}"
+            )
+
+            return False
+
+    X_age = []
+    y_age = []
+
+    X_emotion = []
+    y_emotion = []
+
+    print()
+    print("Extracting audio features...")
+    print()
+
+    for _, row in data.iterrows():
+
+        filename = str(
+            row["filename"]
+        )
+
+        if not os.path.exists(filename):
+
+            print(
+                "Skipping missing file:",
+                filename
+            )
+
+            continue
+
+        features = extract_features(
+            filename
+        )
+
+        if features is None:
+            continue
+
+        # AGE LABEL
+
+        age = float(
+            row["age"]
+        )
+
+        if age >= 60:
+
+            age_label = "Senior Citizen"
+
+        else:
+
+            age_label = "Below 60"
+
+        X_age.append(
+            features
+        )
+
+        y_age.append(
+            age_label
+        )
+
+        # EMOTION LABEL
+
+        emotion = str(
+            row["emotion"]
+        ).strip().lower()
+
+        X_emotion.append(
+            features
+        )
+
+        y_emotion.append(
+            emotion
+        )
+
+    if len(X_age) < 4:
+
+        messagebox.showerror(
+            "Not Enough Data",
+            "At least 4 valid WAV files are required."
+        )
+
+        return False
+
+    X_age = np.array(
+        X_age
+    )
+
+    y_age = np.array(
+        y_age
+    )
+
+    X_emotion = np.array(
+        X_emotion
+    )
+
+    y_emotion = np.array(
+        y_emotion
+    )
+
+    # AGE MODEL
+
+    age_model = Pipeline([
+        (
+            "scaler",
+            StandardScaler()
+        ),
+        (
+            "classifier",
+            RandomForestClassifier(
+                n_estimators=200,
+                random_state=42
+            )
+        )
+    ])
+
+    age_model.fit(
+        X_age,
+        y_age
+    )
+
+    joblib.dump(
+        age_model,
+        AGE_MODEL_FILE
+    )
+
+    print(
+        "Age model trained."
+    )
+
+    # EMOTION MODEL
+
+    unique_emotions = np.unique(
+        y_emotion
+    )
+
+    if len(unique_emotions) >= 2:
+
+        emotion_model = Pipeline([
+            (
+                "scaler",
+                StandardScaler()
+            ),
+            (
+                "classifier",
+                RandomForestClassifier(
+                    n_estimators=200,
+                    random_state=42
+                )
+            )
+        ])
+
+        emotion_model.fit(
+            X_emotion,
+            y_emotion
+        )
+
+        joblib.dump(
+            emotion_model,
+            EMOTION_MODEL_FILE
+        )
+
+        print(
+            "Emotion model trained."
+        )
+
+    else:
+
+        print(
+            "Need at least two emotion classes."
+        )
+
+    return True
+
+
+# LOAD MODELS
+
+def load_models():
+
+    if not os.path.exists(
+        AGE_MODEL_FILE
+    ):
+
+        return None, None
+
+    age_model = joblib.load(
+        AGE_MODEL_FILE
+    )
+
+    if os.path.exists(
+        EMOTION_MODEL_FILE
+    ):
+
+        emotion_model = joblib.load(
+            EMOTION_MODEL_FILE
+        )
+
+    else:
+
+        emotion_model = None
+
+    return (
+        age_model,
+        emotion_model
+    )
+
+
+# PREDICT
+
+def predict_audio(
+    audio_file,
+    age_model,
+    emotion_model
+):
+
+    features = extract_features(
+        audio_file
+    )
+
+    if features is None:
+
+        raise ValueError(
+            "Could not extract audio features."
+        )
+
+    features = features.reshape(
+        1,
+        -1
+    )
+
+    # AGE
+
+    age_prediction = age_model.predict(
+        features
+    )[0]
+
+    # EMOTION
+
+    emotion_prediction = "Not required"
+
+    if (
+        age_prediction == "Senior Citizen"
+        and emotion_model is not None
+    ):
+
+        emotion_prediction = (
+            emotion_model.predict(
+                features
+            )[0]
+        )
+
+    return (
+        age_prediction,
+        emotion_prediction
+    )
+
+
+# SAVE RESULT
+
+def save_result(
+    audio_file,
+    age_group,
+    emotion
+):
+
+    now = datetime.now()
+
+    date = now.strftime(
+        "%Y-%m-%d"
+    )
+
+    time = now.strftime(
+        "%H:%M:%S"
+    )
+
+    senior = (
+        "YES"
+        if age_group == "Senior Citizen"
+        else "NO"
+    )
+
+    with open(
+        PREDICTION_FILE,
+        "a",
+        newline="",
+        encoding="utf-8"
+    ) as file:
+
+        writer = csv.writer(
+            file
+        )
+
+        writer.writerow([
+            date,
+            time,
+            os.path.basename(
+                audio_file
+            ),
+            age_group,
+            senior,
+            emotion
+        ])
+
+
+# GUI
+
+class VoiceApplication:
+
+    def __init__(self, root):
+
+        self.root = root
+
+        self.root.title(
+            "Age & Emotion Detection Through Voice"
+        )
+
+        self.root.geometry(
+            "850x650"
+        )
+
+        self.root.configure(
+            bg="#202020"
+        )
+
+        self.audio_file = None
+
+        self.age_model = None
+
+        self.emotion_model = None
+
+        create_prediction_file()
+
+        # TITLE
+
+        title = tk.Label(
+            root,
+            text="AGE & EMOTION DETECTION",
+            font=("Arial", 24, "bold"),
+            bg="#202020",
+            fg="white"
+        )
+
+        title.pack(
+            pady=20
+        )
+
+        subtitle = tk.Label(
+            root,
+            text=(
+                "Voice-based Machine Learning System"
+            ),
+            font=("Arial", 13),
+            bg="#202020",
+            fg="#cccccc"
+        )
+
+        subtitle.pack()
+
+        # BUTTON FRAME
+
+        button_frame = tk.Frame(
+            root,
+            bg="#202020"
+        )
+
+        button_frame.pack(
+            pady=30
+        )
+
+        train_button = tk.Button(
+            button_frame,
+            text="TRAIN MODEL",
+            command=self.train,
+            font=("Arial", 13, "bold"),
+            padx=20,
+            pady=10
+        )
+
+        train_button.grid(
+            row=0,
+            column=0,
+            padx=10
+        )
+
+        upload_button = tk.Button(
+            button_frame,
+            text="UPLOAD WAV",
+            command=self.upload,
+            font=("Arial", 13, "bold"),
+            padx=20,
+            pady=10
+        )
+
+        upload_button.grid(
+            row=0,
+            column=1,
+            padx=10
+        )
+
+        record_button = tk.Button(
+            button_frame,
+            text="RECORD VOICE",
+            command=self.record,
+            font=("Arial", 13, "bold"),
+            padx=20,
+            pady=10
+        )
+
+        record_button.grid(
+            row=0,
+            column=2,
+            padx=10
+        )
+
+        analyze_button = tk.Button(
+            button_frame,
+            text="ANALYZE",
+            command=self.analyze,
+            font=("Arial", 13, "bold"),
+            padx=20,
+            pady=10
+        )
+
+        analyze_button.grid(
+            row=0,
+            column=3,
+            padx=10
+        )
+
+        # FILE LABEL
+
+        self.file_label = tk.Label(
+            root,
+            text="No audio selected",
+            font=("Arial", 13),
+            bg="#202020",
+            fg="white"
+        )
+
+        self.file_label.pack(
+            pady=15
+        )
+
+        # RESULT
+
+        self.result = tk.Label(
+            root,
+            text="Result will appear here",
+            font=("Arial", 18, "bold"),
+            bg="#202020",
+            fg="#00ff99",
+            justify="left"
+        )
+
+        self.result.pack(
+            pady=30
+        )
+
+        # INSTRUCTIONS
+
+        instructions = tk.Label(
+            root,
+            text=(
+                "1. Train the model\n"
+                "2. Upload a WAV file or record your voice\n"
+                "3. Click ANALYZE"
+            ),
+            font=("Arial", 12),
+            bg="#202020",
+            fg="#bbbbbb"
+        )
+
+        instructions.pack(
+            pady=20
+        )
+
+    # TRAIN
+
+    def train(self):
+
+        self.result.config(
+            text="Training model..."
+        )
+
+        self.root.update()
+
+        success = train_models()
+
+        if success:
+
+            self.age_model, self.emotion_model = (
+                load_models()
+            )
+
+            self.result.config(
+                text="Model trained successfully."
+            )
+
+            messagebox.showinfo(
+                "Success",
+                "Models trained successfully."
+            )
+
+    # UPLOAD
+
+    def upload(self):
+
+        filename = filedialog.askopenfilename(
+            title="Select WAV file",
+            filetypes=[
+                (
+                    "WAV Audio",
+                    "*.wav"
+                )
+            ]
+        )
+
+        if not filename:
+            return
+
+        self.audio_file = filename
+
+        self.file_label.config(
+            text=(
+                "Selected: "
+                + os.path.basename(
+                    filename
+                )
+            )
+        )
+
+        self.result.config(
+            text="Audio loaded."
+        )
+
+    # RECORD
+
+    def record(self):
+
+        try:
+
+            self.result.config(
+                text="Recording..."
+            )
+
+            self.root.update()
+
+            print(
+                "Recording for",
+                RECORD_SECONDS,
+                "seconds..."
+            )
+
+            recording = sd.rec(
+                int(
+                    RECORD_SECONDS
+                    * SAMPLE_RATE
+                ),
+                samplerate=SAMPLE_RATE,
+                channels=1,
+                dtype="float32"
+            )
+
+            sd.wait()
+
+            filename = (
+                "recorded_voice.wav"
+            )
+
+            sf.write(
+                filename,
+                recording,
+                SAMPLE_RATE
+            )
+
+            self.audio_file = filename
+
+            self.file_label.config(
+                text="Recorded: recorded_voice.wav"
+            )
+
+            self.result.config(
+                text="Recording completed."
+            )
+
+        except Exception as e:
+
+            messagebox.showerror(
+                "Recording Error",
+                str(e)
+            )
+
+    # ANALYZE
+
+    def analyze(self):
+
+        if self.audio_file is None:
+
+            messagebox.showwarning(
+                "No Audio",
+                "Upload or record a WAV file first."
+            )
+
+            return
+
+        # Load models if necessary
+        if self.age_model is None:
+
+            self.age_model, self.emotion_model = (
+                load_models()
+            )
+
+        if self.age_model is None:
+
+            messagebox.showwarning(
+                "Model Missing",
+                "Train the model first."
+            )
+
+            return
+
+        try:
+
+            age_group, emotion = predict_audio(
+                self.audio_file,
+                self.age_model,
+                self.emotion_model
+            )
+
+            if age_group == "Senior Citizen":
+
+                result_text = (
+                    "RESULT\n"
+                    "--------------------\n"
+                    "Age Group: 60+\n"
+                    "Status: SENIOR CITIZEN\n"
+                    f"Emotion: {emotion}"
+                )
+
+            else:
+
+                result_text = (
+                    "RESULT\n"
+                    "--------------------\n"
+                    "Age Group: Below 60\n"
+                    "Status: Not Senior Citizen\n"
+                    "Emotion: Not required"
+                )
+
+            self.result.config(
+                text=result_text
+            )
+
+            save_result(
+                self.audio_file,
+                age_group,
+                emotion
+            )
+
+        except Exception as e:
+
+            messagebox.showerror(
+                "Prediction Error",
+                str(e)
+            )
+
+
+# START PROGRAM
+
+if __name__ == "__main__":
+
+    root = tk.Tk()
+
+    app = VoiceApplication(
+        root
+    )
+
+    root.mainloop()
+```
