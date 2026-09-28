@@ -1,0 +1,452 @@
+import cv2
+import csv
+import os
+from datetime import datetime
+
+
+# SETTINGS
+
+CSV_FILE = "senior_visits.csv"
+
+CAMERA_NUMBER = 0
+
+CONFIDENCE_THRESHOLD = 0.60
+
+# Age classes used by the OpenCV AgeNet model
+AGE_RANGES = [
+    "(0-2)",
+    "(4-6)",
+    "(8-12)",
+    "(15-20)",
+    "(25-32)",
+    "(38-43)",
+    "(48-53)",
+    "(60-100)"
+]
+
+MODEL_MEAN_VALUES = (
+    78.4263377603,
+    87.7689143744,
+    114.895847746
+)
+
+
+# MODEL FILES
+
+FACE_MODEL = "opencv_face_detector_uint8.pb"
+FACE_CONFIG = "opencv_face_detector.pbtxt"
+
+AGE_MODEL = "age_net.caffemodel"
+AGE_CONFIG = "age_deploy.prototxt"
+
+
+# CHECK MODEL FILES
+
+required_files = [
+    FACE_MODEL,
+    FACE_CONFIG,
+    AGE_MODEL,
+    AGE_CONFIG
+]
+
+for filename in required_files:
+
+    if not os.path.exists(filename):
+
+        print()
+        print("ERROR: Missing model file:")
+        print(filename)
+        print()
+        print("Put these files in the same folder as app.py:")
+        print("1. opencv_face_detector_uint8.pb")
+        print("2. opencv_face_detector.pbtxt")
+        print("3. age_net.caffemodel")
+        print("4. age_deploy.prototxt")
+        print()
+
+        input("Press ENTER to exit...")
+        raise SystemExit
+
+
+# LOAD MODELS
+
+print("Loading face detection model...")
+
+face_net = cv2.dnn.readNet(
+    FACE_MODEL,
+    FACE_CONFIG
+)
+
+print("Loading age detection model...")
+
+age_net = cv2.dnn.readNet(
+    AGE_MODEL,
+    AGE_CONFIG
+)
+
+print("Models loaded successfully.")
+
+
+# CREATE CSV FILE
+
+if not os.path.exists(CSV_FILE):
+
+    with open(
+        CSV_FILE,
+        "w",
+        newline="",
+        encoding="utf-8"
+    ) as file:
+
+        writer = csv.writer(file)
+
+        writer.writerow([
+            "Date",
+            "Time",
+            "Estimated Age Group",
+            "Senior Citizen"
+        ])
+
+
+# PREVENT CSV SPAM
+
+last_logged = {}
+
+
+# FACE DETECTION
+
+def detect_faces(frame):
+
+    height, width = frame.shape[:2]
+
+    blob = cv2.dnn.blobFromImage(
+        frame,
+        1.0,
+        (300, 300),
+        [104, 117, 123],
+        False,
+        False
+    )
+
+    face_net.setInput(blob)
+
+    detections = face_net.forward()
+
+    faces = []
+
+    for i in range(detections.shape[2]):
+
+        confidence = detections[0, 0, i, 2]
+
+        if confidence < CONFIDENCE_THRESHOLD:
+            continue
+
+        box = detections[0, 0, i, 3:7] * [
+            width,
+            height,
+            width,
+            height
+        ]
+
+        x1, y1, x2, y2 = box.astype(int)
+
+        x1 = max(0, x1)
+        y1 = max(0, y1)
+
+        x2 = min(width - 1, x2)
+        y2 = min(height - 1, y2)
+
+        if x2 <= x1 or y2 <= y1:
+            continue
+
+        faces.append(
+            (x1, y1, x2, y2, confidence)
+        )
+
+    return faces
+
+
+# AGE PREDICTION
+
+def predict_age(face):
+
+    blob = cv2.dnn.blobFromImage(
+        face,
+        1.0,
+        (227, 227),
+        MODEL_MEAN_VALUES,
+        swapRB=False
+    )
+
+    age_net.setInput(blob)
+
+    prediction = age_net.forward()
+
+    index = prediction[0].argmax()
+
+    age_group = AGE_RANGES[index]
+
+    confidence = float(
+        prediction[0][index]
+    )
+
+    return age_group, confidence
+
+
+# CHECK SENIOR CITIZEN
+
+def is_senior(age_group):
+
+    return age_group == "(60-100)"
+
+
+# SAVE SENIOR VISIT
+
+def save_visit(age_group):
+
+    now = datetime.now()
+
+    date = now.strftime("%Y-%m-%d")
+
+    time = now.strftime("%H:%M:%S")
+
+    key = date + "_" + time[:5]
+
+    # Prevent the same person/group from being written
+    # hundreds of times every second.
+    if key in last_logged:
+        return
+
+    last_logged[key] = True
+
+    with open(
+        CSV_FILE,
+        "a",
+        newline="",
+        encoding="utf-8"
+    ) as file:
+
+        writer = csv.writer(file)
+
+        writer.writerow([
+            date,
+            time,
+            age_group,
+            "YES"
+        ])
+
+    print(
+        f"[LOGGED] {date} {time} | "
+        f"Age: {age_group} | Senior Citizen: YES"
+    )
+
+
+# START WEBCAM
+
+print()
+print("Starting webcam...")
+print("Press Q to quit.")
+print("Press S to save a screenshot.")
+print()
+
+camera = cv2.VideoCapture(CAMERA_NUMBER)
+
+if not camera.isOpened():
+
+    print("ERROR: Could not open webcam.")
+
+    input("Press ENTER to exit...")
+
+    raise SystemExit
+
+
+# MAIN LOOP
+
+while True:
+
+    success, frame = camera.read()
+
+    if not success:
+
+        print("Could not read webcam frame.")
+
+        break
+
+    # Mirror image
+    frame = cv2.flip(
+        frame,
+        1
+    )
+
+    # Detect faces
+    faces = detect_faces(frame)
+
+    senior_count = 0
+
+    # PROCESS EVERY DETECTED PERSON
+
+    for face_number, data in enumerate(faces):
+
+        x1, y1, x2, y2, face_confidence = data
+
+        face = frame[
+            y1:y2,
+            x1:x2
+        ]
+
+        if face.size == 0:
+            continue
+
+        # Predict age
+        age_group, age_confidence = predict_age(face)
+
+        # Determine senior citizen
+        senior = is_senior(age_group)
+
+        if senior:
+
+            senior_count += 1
+
+            # Save visit
+            save_visit(age_group)
+
+            box_color = (0, 0, 255)
+
+            label = (
+                "SENIOR CITIZEN | "
+                + age_group
+            )
+
+        else:
+
+            box_color = (0, 255, 0)
+
+            label = (
+                "Age: "
+                + age_group
+            )
+
+        # DRAW FACE BOX
+
+        cv2.rectangle(
+            frame,
+            (x1, y1),
+            (x2, y2),
+            box_color,
+            2
+        )
+
+        # DRAW LABEL
+
+        cv2.rectangle(
+            frame,
+            (x1, y1 - 35),
+            (x2, y1),
+            box_color,
+            -1
+        )
+
+        cv2.putText(
+            frame,
+            label,
+            (x1 + 5, y1 - 10),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.55,
+            (255, 255, 255),
+            2
+        )
+
+        # Confidence
+        confidence_text = (
+            f"Confidence: "
+            f"{age_confidence * 100:.1f}%"
+        )
+
+        cv2.putText(
+            frame,
+            confidence_text,
+            (x1, y2 + 20),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.45,
+            box_color,
+            1
+        )
+
+    # DISPLAY INFORMATION
+
+    cv2.rectangle(
+        frame,
+        (0, 0),
+        (400, 75),
+        (30, 30, 30),
+        -1
+    )
+
+    cv2.putText(
+        frame,
+        f"People detected: {len(faces)}",
+        (10, 30),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.65,
+        (255, 255, 255),
+        2
+    )
+
+    cv2.putText(
+        frame,
+        f"Senior citizens: {senior_count}",
+        (10, 60),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.65,
+        (0, 0, 255),
+        2
+    )
+
+    # SHOW VIDEO
+
+    cv2.imshow(
+        "Senior Citizen Identification System",
+        frame
+    )
+
+    key = cv2.waitKey(1) & 0xFF
+
+    # Q = quit
+    if key == ord("q"):
+
+        break
+
+    # S = screenshot
+    if key == ord("s"):
+
+        filename = (
+            "screenshot_"
+            + datetime.now().strftime(
+                "%Y%m%d_%H%M%S"
+            )
+            + ".jpg"
+        )
+
+        cv2.imwrite(
+            filename,
+            frame
+        )
+
+        print(
+            "Screenshot saved:",
+            filename
+        )
+
+
+
+camera.release()
+
+cv2.destroyAllWindows()
+
+print()
+print("Program stopped.")
+print("Visit records saved in:")
+print(CSV_FILE)
+print()
+```
+
