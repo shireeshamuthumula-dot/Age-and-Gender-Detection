@@ -1,0 +1,466 @@
+
+import tkinter as tk
+from tkinter import filedialog, messagebox
+from PIL import Image, ImageTk
+import cv2
+import numpy as np
+import os
+
+
+# CONFIGURATION
+
+WINDOW_TITLE = "Long Hair Identification - ML Project"
+
+# OpenCV face detector
+FACE_MODEL = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+
+
+# FACE DETECTOR
+
+face_detector = cv2.CascadeClassifier(FACE_MODEL)
+
+
+# IMAGE PROCESSING FUNCTIONS
+
+def detect_face(image):
+    """
+    Detect the largest face in the image.
+    """
+
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+    faces = face_detector.detectMultiScale(
+        gray,
+        scaleFactor=1.1,
+        minNeighbors=5,
+        minSize=(80, 80)
+    )
+
+    if len(faces) == 0:
+        return None
+
+    # Select largest detected face
+    largest_face = max(
+        faces,
+        key=lambda rectangle: rectangle[2] * rectangle[3]
+    )
+
+    return largest_face
+
+
+def estimate_hair_length(image, face):
+    """
+    Simple visual hair-length estimation.
+
+    This is a demonstration heuristic rather than a trained
+    hair-segmentation neural network.
+
+    Returns:
+        "Long Hair"
+        "Short Hair"
+    """
+
+    x, y, w, h = face
+
+    height, width = image.shape[:2]
+
+    # Region around and below the face
+    left = max(0, x - int(w * 0.55))
+    right = min(width, x + int(w * 1.55))
+
+    top = max(0, y - int(h * 0.25))
+    bottom = min(height, y + int(h * 2.2))
+
+    region = image[top:bottom, left:right]
+
+    if region.size == 0:
+        return "Unknown"
+
+    gray = cv2.cvtColor(region, cv2.COLOR_BGR2GRAY)
+
+    # Edge detection
+    edges = cv2.Canny(gray, 50, 150)
+
+    # Calculate edge density
+    edge_pixels = np.count_nonzero(edges)
+    total_pixels = edges.shape[0] * edges.shape[1]
+
+    if total_pixels == 0:
+        return "Unknown"
+
+    density = edge_pixels / total_pixels
+
+    # Estimate visible hair area below the face
+    below_face_top = min(
+        region.shape[0],
+        int(region.shape[0] * 0.45)
+    )
+
+    below_face = region[below_face_top:, :]
+
+    if below_face.size == 0:
+        return "Short Hair"
+
+    gray_below = cv2.cvtColor(
+        below_face,
+        cv2.COLOR_BGR2GRAY
+    )
+
+    # Dark-pixel percentage
+    dark_pixels = np.sum(gray_below < 90)
+    total_below = gray_below.size
+
+    dark_ratio = dark_pixels / total_below
+
+    # Demonstration heuristic
+    if dark_ratio > 0.22 and density > 0.04:
+        return "Long Hair"
+
+    return "Short Hair"
+
+
+def estimate_age_group(image, face):
+    """
+    Demonstration age-group classifier.
+
+    NOTE:
+    A real ML system should use a trained age-estimation model.
+    This standalone demo intentionally uses image-based
+    heuristics so that the project can run without downloading
+    large neural-network model files.
+    """
+
+    x, y, w, h = face
+
+    face_crop = image[y:y+h, x:x+w]
+
+    if face_crop.size == 0:
+        return "Unknown"
+
+    # Basic image statistics used only for demonstration.
+    gray = cv2.cvtColor(face_crop, cv2.COLOR_BGR2GRAY)
+
+    brightness = np.mean(gray)
+    contrast = np.std(gray)
+
+    # These values are NOT medically/scientifically valid
+    # age estimation. They merely provide an executable
+    # demonstration of the classification pipeline.
+
+    if brightness < 75 and contrast > 45:
+        return "Under 20"
+
+    if brightness > 180 and contrast < 35:
+        return "Above 30"
+
+    return "20-30"
+
+
+# MAIN PREDICTION
+
+def analyze_image(image):
+    """
+    Complete prediction pipeline.
+    """
+
+    face = detect_face(image)
+
+    if face is None:
+        return None, "No face detected."
+
+    age_group = estimate_age_group(image, face)
+
+    hair_length = estimate_hair_length(image, face)
+
+    x, y, w, h = face
+
+    # Draw face rectangle
+    output = image.copy()
+
+    cv2.rectangle(
+        output,
+        (x, y),
+        (x + w, y + h),
+        (0, 255, 0),
+        3
+    )
+
+    # Text shown on image
+    cv2.putText(
+        output,
+        "Age: " + age_group,
+        (x, max(30, y - 35)),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.8,
+        (0, 255, 0),
+        2
+    )
+
+    cv2.putText(
+        output,
+        "Hair: " + hair_length,
+        (x, max(60, y - 5)),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.8,
+        (0, 255, 0),
+        2
+    )
+
+    result = (
+        "Prediction\n"
+        "--------------------\n"
+        f"Age Group : {age_group}\n"
+        f"Hair      : {hair_length}"
+    )
+
+    return output, result
+
+
+# GUI CLASS
+
+class HairIdentificationGUI:
+
+    def __init__(self, root):
+
+        self.root = root
+
+        self.root.title(WINDOW_TITLE)
+
+        self.root.geometry("1000x750")
+
+        self.root.configure(bg="#202020")
+
+        self.current_image = None
+        self.display_image = None
+
+        # TITLE
+
+        title = tk.Label(
+            root,
+            text="LONG HAIR IDENTIFICATION",
+            font=("Arial", 24, "bold"),
+            bg="#202020",
+            fg="white"
+        )
+
+        title.pack(pady=15)
+
+        subtitle = tk.Label(
+            root,
+            text="Age Group + Hair Length Detection",
+            font=("Arial", 13),
+            bg="#202020",
+            fg="#cccccc"
+        )
+
+        subtitle.pack()
+
+        # IMAGE AREA
+
+        self.image_label = tk.Label(
+            root,
+            text="Upload an image",
+            font=("Arial", 18),
+            bg="#303030",
+            fg="white",
+            width=70,
+            height=20
+        )
+
+        self.image_label.pack(
+            padx=20,
+            pady=20
+        )
+
+        # BUTTONS
+
+        button_frame = tk.Frame(
+            root,
+            bg="#202020"
+        )
+
+        button_frame.pack(pady=10)
+
+        upload_button = tk.Button(
+            button_frame,
+            text="UPLOAD IMAGE",
+            font=("Arial", 13, "bold"),
+            command=self.upload_image,
+            padx=20,
+            pady=10
+        )
+
+        upload_button.grid(
+            row=0,
+            column=0,
+            padx=10
+        )
+
+        analyze_button = tk.Button(
+            button_frame,
+            text="ANALYZE IMAGE",
+            font=("Arial", 13, "bold"),
+            command=self.analyze,
+            padx=20,
+            pady=10
+        )
+
+        analyze_button.grid(
+            row=0,
+            column=1,
+            padx=10
+        )
+
+        clear_button = tk.Button(
+            button_frame,
+            text="CLEAR",
+            font=("Arial", 13, "bold"),
+            command=self.clear,
+            padx=20,
+            pady=10
+        )
+
+        clear_button.grid(
+            row=0,
+            column=2,
+            padx=10
+        )
+
+        # RESULT
+
+        self.result_label = tk.Label(
+            root,
+            text="Result will appear here",
+            font=("Arial", 17, "bold"),
+            bg="#202020",
+            fg="#00ff99",
+            justify="left"
+        )
+
+        self.result_label.pack(
+            pady=20
+        )
+
+    # UPLOAD IMAGE
+
+    def upload_image(self):
+
+        file_path = filedialog.askopenfilename(
+            title="Select Image",
+            filetypes=[
+                ("Image Files", "*.jpg *.jpeg *.png *.bmp"),
+                ("JPG", "*.jpg"),
+                ("PNG", "*.png"),
+                ("All Files", "*.*")
+            ]
+        )
+
+        if not file_path:
+            return
+
+        image = cv2.imread(file_path)
+
+        if image is None:
+
+            messagebox.showerror(
+                "Error",
+                "Could not open the selected image."
+            )
+
+            return
+
+        self.current_image = image
+
+        self.show_image(image)
+
+        self.result_label.config(
+            text="Image loaded successfully."
+        )
+
+    # DISPLAY IMAGE
+
+    def show_image(self, image):
+
+        rgb = cv2.cvtColor(
+            image,
+            cv2.COLOR_BGR2RGB
+        )
+
+        pil_image = Image.fromarray(rgb)
+
+        # Resize while keeping aspect ratio
+        max_width = 850
+        max_height = 450
+
+        pil_image.thumbnail(
+            (max_width, max_height)
+        )
+
+        self.display_image = ImageTk.PhotoImage(
+            pil_image
+        )
+
+        self.image_label.config(
+            image=self.display_image,
+            text=""
+        )
+
+    # ANALYZE
+
+    def analyze(self):
+
+        if self.current_image is None:
+
+            messagebox.showwarning(
+                "Warning",
+                "Please upload an image first."
+            )
+
+            return
+
+        output, result = analyze_image(
+            self.current_image
+        )
+
+        if output is None:
+
+            messagebox.showerror(
+                "Error",
+                result
+            )
+
+            return
+
+        self.show_image(output)
+
+        self.result_label.config(
+            text=result
+        )
+
+    # CLEAR
+
+    def clear(self):
+
+        self.current_image = None
+
+        self.display_image = None
+
+        self.image_label.config(
+            image="",
+            text="Upload an image"
+        )
+
+        self.result_label.config(
+            text="Result will appear here"
+        )
+
+
+# PROGRAM START
+
+if __name__ == "__main__":
+
+    root = tk.Tk()
+
+    app = HairIdentificationGUI(root)
+
+    root.mainloop()
