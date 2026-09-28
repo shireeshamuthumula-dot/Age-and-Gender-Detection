@@ -1,0 +1,830 @@
+import tkinter as tk
+from tkinter import filedialog, messagebox
+
+import cv2
+import numpy as np
+
+from PIL import Image, ImageTk
+
+from ultralytics import YOLO
+
+
+# LOAD YOLO MODEL
+
+print("Loading YOLO model...")
+
+try:
+
+    model = YOLO("yolo11n.pt")
+
+except Exception as e:
+
+    print("Could not load YOLO model.")
+    print(e)
+
+    raise SystemExit
+
+
+print("YOLO model loaded successfully.")
+
+
+# COLOUR DETECTION
+
+def detect_car_colour(car_image):
+
+    """
+    Estimate the dominant colour of a car.
+
+    This function uses HSV colour information.
+
+    Returns:
+        BLUE
+        RED
+        GREEN
+        YELLOW
+        WHITE
+        BLACK
+        GRAY
+        OTHER
+    """
+
+    if car_image is None:
+        return "OTHER"
+
+    if car_image.size == 0:
+        return "OTHER"
+
+    # Resize for faster processing
+    image = cv2.resize(
+        car_image,
+        (100, 100)
+    )
+
+    hsv = cv2.cvtColor(
+        image,
+        cv2.COLOR_BGR2HSV
+    )
+
+    # Remove very dark pixels
+
+    saturation = hsv[:, :, 1]
+
+    value = hsv[:, :, 2]
+
+    valid = (
+        value > 40
+    )
+
+    if np.count_nonzero(valid) < 100:
+
+        return "BLACK"
+
+    # HSV ranges
+
+    # Blue
+    blue_mask = cv2.inRange(
+        hsv,
+        np.array([90, 60, 40]),
+        np.array([140, 255, 255])
+    )
+
+    # Red
+    red_mask_1 = cv2.inRange(
+        hsv,
+        np.array([0, 70, 40]),
+        np.array([10, 255, 255])
+    )
+
+    red_mask_2 = cv2.inRange(
+        hsv,
+        np.array([170, 70, 40]),
+        np.array([180, 255, 255])
+    )
+
+    red_mask = (
+        red_mask_1 |
+        red_mask_2
+    )
+
+    # Green
+    green_mask = cv2.inRange(
+        hsv,
+        np.array([35, 50, 40]),
+        np.array([85, 255, 255])
+    )
+
+    # Yellow
+    yellow_mask = cv2.inRange(
+        hsv,
+        np.array([15, 60, 40]),
+        np.array([35, 255, 255])
+    )
+
+    # Calculate percentages
+
+    total = np.count_nonzero(
+        valid
+    )
+
+    blue_percentage = (
+        np.count_nonzero(
+            blue_mask & valid
+        ) / total
+    )
+
+    red_percentage = (
+        np.count_nonzero(
+            red_mask & valid
+        ) / total
+    )
+
+    green_percentage = (
+        np.count_nonzero(
+            green_mask & valid
+        ) / total
+    )
+
+    yellow_percentage = (
+        np.count_nonzero(
+            yellow_mask & valid
+        ) / total
+    )
+
+    # Brightness
+
+    mean_value = np.mean(
+        value[valid]
+    )
+
+    mean_saturation = np.mean(
+        saturation[valid]
+    )
+
+    # Decide colour
+
+    if blue_percentage > 0.18:
+
+        return "BLUE"
+
+    if red_percentage > 0.18:
+
+        return "RED"
+
+    if green_percentage > 0.18:
+
+        return "GREEN"
+
+    if yellow_percentage > 0.18:
+
+        return "YELLOW"
+
+    if mean_value > 190 and mean_saturation < 70:
+
+        return "WHITE"
+
+    if mean_value < 65:
+
+        return "BLACK"
+
+    if mean_saturation < 55:
+
+        return "GRAY"
+
+    return "OTHER"
+
+
+# DETECT OBJECTS
+
+def detect_objects(image):
+
+    """
+    Detect cars and people using YOLO.
+    """
+
+    results = model(
+        image,
+        verbose=False
+    )
+
+    return results[0]
+
+
+# PROCESS IMAGE
+
+def process_image(image):
+
+    """
+    Detect:
+        cars
+        people
+
+    Count them.
+
+    Blue cars:
+        RED rectangle
+
+    Other cars:
+        BLUE rectangle
+    """
+
+    output = image.copy()
+
+    result = detect_objects(
+        image
+    )
+
+    car_count = 0
+
+    person_count = 0
+
+    blue_car_count = 0
+
+    other_car_count = 0
+
+    # COCO class IDs
+    #
+    # person = 0
+    # car    = 2
+
+    boxes = result.boxes
+
+    if boxes is None:
+
+        return (
+            output,
+            car_count,
+            person_count,
+            blue_car_count,
+            other_car_count
+        )
+
+    for box in boxes:
+
+        try:
+
+            class_id = int(
+                box.cls[0]
+            )
+
+            confidence = float(
+                box.conf[0]
+            )
+
+        except Exception:
+
+            continue
+
+        # Ignore weak detections
+        if confidence < 0.35:
+
+            continue
+
+        coordinates = (
+            box.xyxy[0]
+            .cpu()
+            .numpy()
+            .astype(int)
+        )
+
+        x1, y1, x2, y2 = coordinates
+
+        # PERSON
+
+        if class_id == 0:
+
+            person_count += 1
+
+            color = (
+                0,
+                255,
+                0
+            )
+
+            cv2.rectangle(
+                output,
+                (x1, y1),
+                (x2, y2),
+                color,
+                3
+            )
+
+            label = (
+                f"PERSON "
+                f"{confidence * 100:.0f}%"
+            )
+
+            cv2.putText(
+                output,
+                label,
+                (x1, max(25, y1 - 8)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                color,
+                2
+            )
+
+        # CAR
+
+        elif class_id == 2:
+
+            car_count += 1
+
+            # Make sure coordinates are valid
+            height, width = image.shape[:2]
+
+            x1 = max(
+                0,
+                min(x1, width - 1)
+            )
+
+            x2 = max(
+                0,
+                min(x2, width)
+            )
+
+            y1 = max(
+                0,
+                min(y1, height - 1)
+            )
+
+            y2 = max(
+                0,
+                min(y2, height)
+            )
+
+            if x2 <= x1 or y2 <= y1:
+
+                continue
+
+            car_crop = image[
+                y1:y2,
+                x1:x2
+            ]
+
+            # Detect colour
+            car_colour = detect_car_colour(
+                car_crop
+            )
+
+            # ------------------------------------------------
+            # BLUE CAR
+            # ------------------------------------------------
+
+            if car_colour == "BLUE":
+
+                rectangle_color = (
+                    0,
+                    0,
+                    255
+                )
+
+                blue_car_count += 1
+
+            # OTHER CAR
+
+            else:
+
+                rectangle_color = (
+                    255,
+                    0,
+                    0
+                )
+
+                other_car_count += 1
+
+            # Draw rectangle
+            cv2.rectangle(
+                output,
+                (x1, y1),
+                (x2, y2),
+                rectangle_color,
+                3
+            )
+
+            # Label
+            label = (
+                f"CAR - {car_colour} "
+                f"{confidence * 100:.0f}%"
+            )
+
+            cv2.putText(
+                output,
+                label,
+                (x1, max(25, y1 - 8)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                rectangle_color,
+                2
+            )
+
+    # DISPLAY SUMMARY
+
+    # Background panel
+    cv2.rectangle(
+        output,
+        (0, 0),
+        (360, 145),
+        (30, 30, 30),
+        -1
+    )
+
+    # Total cars
+    cv2.putText(
+        output,
+        f"Cars: {car_count}",
+        (15, 30),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.75,
+        (255, 255, 255),
+        2
+    )
+
+    # Blue cars
+    cv2.putText(
+        output,
+        f"Blue Cars: {blue_car_count}",
+        (15, 60),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.65,
+        (0, 0, 255),
+        2
+    )
+
+    # Other cars
+    cv2.putText(
+        output,
+        f"Other Cars: {other_car_count}",
+        (15, 90),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.65,
+        (255, 0, 0),
+        2
+    )
+
+    # People
+    cv2.putText(
+        output,
+        f"People: {person_count}",
+        (15, 120),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.65,
+        (0, 255, 0),
+        2
+    )
+
+    return (
+        output,
+        car_count,
+        person_count,
+        blue_car_count,
+        other_car_count
+    )
+
+
+# GUI
+
+class CarDetectionGUI:
+
+    def __init__(self, root):
+
+        self.root = root
+
+        self.root.title(
+            "Car Colour Detection & Traffic Counter"
+        )
+
+        self.root.geometry(
+            "1200x850"
+        )
+
+        self.root.configure(
+            bg="#202020"
+        )
+
+        self.original_image = None
+
+        self.processed_image = None
+
+        self.display_photo = None
+
+        # TITLE
+
+        title = tk.Label(
+            root,
+            text="CAR COLOUR DETECTION",
+            font=(
+                "Arial",
+                25,
+                "bold"
+            ),
+            bg="#202020",
+            fg="white"
+        )
+
+        title.pack(
+            pady=15
+        )
+
+        subtitle = tk.Label(
+            root,
+            text=(
+                "Traffic Signal Car & People Detection"
+            ),
+            font=(
+                "Arial",
+                13
+            ),
+            bg="#202020",
+            fg="#cccccc"
+        )
+
+        subtitle.pack()
+
+        # IMAGE PREVIEW
+
+        self.image_label = tk.Label(
+            root,
+            text="UPLOAD A TRAFFIC IMAGE",
+            font=(
+                "Arial",
+                18,
+                "bold"
+            ),
+            bg="#303030",
+            fg="white",
+            width=90,
+            height=25
+        )
+
+        self.image_label.pack(
+            padx=20,
+            pady=20
+        )
+
+        # BUTTONS
+
+        button_frame = tk.Frame(
+            root,
+            bg="#202020"
+        )
+
+        button_frame.pack(
+            pady=10
+        )
+
+        upload_button = tk.Button(
+            button_frame,
+            text="UPLOAD IMAGE",
+            font=(
+                "Arial",
+                13,
+                "bold"
+            ),
+            command=self.upload_image,
+            padx=25,
+            pady=12
+        )
+
+        upload_button.grid(
+            row=0,
+            column=0,
+            padx=10
+        )
+
+        detect_button = tk.Button(
+            button_frame,
+            text="DETECT",
+            font=(
+                "Arial",
+                13,
+                "bold"
+            ),
+            command=self.detect,
+            padx=35,
+            pady=12
+        )
+
+        detect_button.grid(
+            row=0,
+            column=1,
+            padx=10
+        )
+
+        clear_button = tk.Button(
+            button_frame,
+            text="CLEAR",
+            font=(
+                "Arial",
+                13,
+                "bold"
+            ),
+            command=self.clear,
+            padx=35,
+            pady=12
+        )
+
+        clear_button.grid(
+            row=0,
+            column=2,
+            padx=10
+        )
+
+        # RESULT
+
+        self.result_label = tk.Label(
+            root,
+            text="Upload an image to begin.",
+            font=(
+                "Arial",
+                17,
+                "bold"
+            ),
+            bg="#202020",
+            fg="#00ff99",
+            justify="left"
+        )
+
+        self.result_label.pack(
+            pady=15
+        )
+
+    # UPLOAD IMAGE
+
+    def upload_image(self):
+
+        filename = filedialog.askopenfilename(
+            title="Select Traffic Image",
+            filetypes=[
+                (
+                    "Image Files",
+                    "*.jpg *.jpeg *.png *.bmp"
+                ),
+                (
+                    "JPG",
+                    "*.jpg"
+                ),
+                (
+                    "PNG",
+                    "*.png"
+                ),
+                (
+                    "All Files",
+                    "*.*"
+                )
+            ]
+        )
+
+        if not filename:
+
+            return
+
+        image = cv2.imread(
+            filename
+        )
+
+        if image is None:
+
+            messagebox.showerror(
+                "Error",
+                "Could not open image."
+            )
+
+            return
+
+        self.original_image = image
+
+        self.processed_image = None
+
+        self.show_image(
+            image
+        )
+
+        self.result_label.config(
+            text=(
+                "Image loaded successfully.\n"
+                "Click DETECT."
+            )
+        )
+
+    # DETECT
+
+    def detect(self):
+
+        if self.original_image is None:
+
+            messagebox.showwarning(
+                "No Image",
+                "Please upload an image first."
+            )
+
+            return
+
+        self.result_label.config(
+            text="Detecting cars and people..."
+        )
+
+        self.root.update()
+
+        try:
+
+            (
+                output,
+                car_count,
+                person_count,
+                blue_car_count,
+                other_car_count
+            ) = process_image(
+                self.original_image
+            )
+
+            self.processed_image = output
+
+            self.show_image(
+                output
+            )
+
+            self.result_label.config(
+                text=(
+                    f"TOTAL CARS     : {car_count}\n"
+                    f"BLUE CARS      : {blue_car_count}\n"
+                    f"OTHER CARS     : {other_car_count}\n"
+                    f"TOTAL PEOPLE   : {person_count}"
+                )
+            )
+
+        except Exception as e:
+
+            messagebox.showerror(
+                "Detection Error",
+                str(e)
+            )
+
+            self.result_label.config(
+                text="Detection failed."
+
+            )
+
+    # SHOW IMAGE
+
+    def show_image(
+        self,
+        image
+    ):
+
+        rgb = cv2.cvtColor(
+            image,
+            cv2.COLOR_BGR2RGB
+        )
+
+        pil_image = Image.fromarray(
+            rgb
+        )
+
+        # Keep image inside GUI
+        pil_image.thumbnail(
+            (1100, 550)
+        )
+
+        self.display_photo = (
+            ImageTk.PhotoImage(
+                pil_image
+            )
+        )
+
+        self.image_label.config(
+            image=self.display_photo,
+            text=""
+        )
+
+    # CLEAR
+
+    def clear(self):
+
+        self.original_image = None
+
+        self.processed_image = None
+
+        self.display_photo = None
+
+        self.image_label.config(
+            image="",
+            text="UPLOAD A TRAFFIC IMAGE"
+        )
+
+        self.result_label.config(
+            text="Upload an image to begin."
+        )
+
+
+# START APPLICATION
+
+if __name__ == "__main__":
+
+    root = tk.Tk()
+
+    app = CarDetectionGUI(
+        root
+    )
+
+    root.mainloop()
+```
